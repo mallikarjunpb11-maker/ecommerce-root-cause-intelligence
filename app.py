@@ -161,69 +161,123 @@ col4.metric("Orders Processed", f"{i_orders:,.0f}", f"{((i_orders - b_orders)/b_
 
 st.markdown("---")
 
-# --- 4. ROOT CAUSE SLICING ALGORITHM ---
+# --- 4. ROOT CAUSE SLICING ALGORITHM (replaces your section 4) ---
+# Paste this in place of everything from "# --- 4. ROOT CAUSE SLICING ALGORITHM ---"
+# down to (and including) st.plotly_chart(fig_bar, ...). Section 5 stays as is,
+# except change the AOV input's default (see bottom of this file).
+
+from itertools import combinations
+
 st.subheader("2. Automated Root Cause Decomposition")
 
-dimensions = ["browser", "device", "gateway"]
-results = []
+# AOV comes from the data, not a hardcoded $75
+baseline_aov = (b_rev / b_orders) if b_orders > 0 else 0
 
-for dim in dimensions:
-    b_group = base.groupby(dim).agg({"sessions": "sum", "orders": "sum", "revenue": "sum"}).reset_index()
-    i_group = inci.groupby(dim).agg({"sessions": "sum", "orders": "sum", "revenue": "sum"}).reset_index()
-    
-    merged = pd.merge(b_group, i_group, on=dim, suffixes=("_base", "_inci"))
-    merged["cr_base"] = (merged["orders_base"] / merged["sessions_base"]) * 100
-    merged["cr_inci"] = (merged["orders_inci"] / merged["sessions_inci"]) * 100
+DIMENSIONS = ["browser", "device", "gateway"]
+MIN_SESSION_SHARE = 0.02      # ignore slices with < 2% of incident sessions
+ALERT_THRESHOLD_PTS = 0.5     # only raise the red alert if CR drops >= 0.5 points
+
+# 1-way, 2-way and 3-way slices: single dimensions plus combinations
+slice_sets = []
+for r in range(1, len(DIMENSIONS) + 1):
+    slice_sets.extend(combinations(DIMENSIONS, r))
+
+results = []
+for dims in slice_sets:
+    dims = list(dims)
+    b_group = base.groupby(dims).agg(
+        sessions=("sessions", "sum"), orders=("orders", "sum"), revenue=("revenue", "sum")
+    ).reset_index()
+    i_group = inci.groupby(dims).agg(
+        sessions=("sessions", "sum"), orders=("orders", "sum"), revenue=("revenue", "sum")
+    ).reset_index()
+
+    merged = pd.merge(b_group, i_group, on=dims, suffixes=("_base", "_inci"))
+    merged = merged[(merged["sessions_base"] > 0) & (merged["sessions_inci"] > 0)]
+    if merged.empty or i_sessions == 0:
+        continue
+
+    merged["session_share"] = merged["sessions_inci"] / i_sessions
+    merged = merged[merged["session_share"] >= MIN_SESSION_SHARE]
+    if merged.empty:
+        continue
+
+    merged["cr_base"] = merged["orders_base"] / merged["sessions_base"] * 100
+    merged["cr_inci"] = merged["orders_inci"] / merged["sessions_inci"] * 100
     merged["cr_delta"] = merged["cr_inci"] - merged["cr_base"]
-    
-    # Weighted Loss Score: (Delta CR) * (Share of Total Incident Sessions)
-    merged["loss_score"] = merged["cr_delta"] * (merged["sessions_inci"] / i_sessions)
-    merged["revenue_lost"] = (merged["cr_base"]/100 * merged["sessions_inci"] * 75) - merged["revenue_inci"]
+
+    # Traffic-weighted loss: (change in CR) x (share of incident traffic)
+    merged["loss_score"] = merged["cr_delta"] * merged["session_share"]
+
+    # Lost orders = orders we'd expect at baseline CR minus orders we got
+    expected_orders = merged["cr_base"] / 100 * merged["sessions_inci"]
+    merged["revenue_lost"] = ((expected_orders - merged["orders_inci"]) * baseline_aov).clip(lower=0)
 
     for _, row in merged.iterrows():
         results.append({
-            "Dimension": dim.title(),
-            "Segment": row[dim],
+            "Depth": f"{len(dims)}-way",
+            "Dimension": " + ".join(d.title() for d in dims),
+            "Segment": " + ".join(str(row[d]) for d in dims),
             "Baseline CR (%)": round(row["cr_base"], 2),
             "Incident CR (%)": round(row["cr_inci"], 2),
             "CR Delta (%)": round(row["cr_delta"], 2),
             "Loss Contribution Score": round(row["loss_score"], 4),
-            "Estimated Lost Revenue ($)": int(row["revenue_lost"]) if row["revenue_lost"] > 0 else 0
+            "Estimated Lost Revenue ($)": int(row["revenue_lost"]),
         })
 
-results_df = pd.DataFrame(results).sort_values(by="Loss Contribution Score", ascending=True)
+if not results:
+    st.info("Not enough data in the current filter selection to decompose the drop.")
+    st.stop()
 
+results_df = pd.DataFrame(results).sort_values(by="Loss Contribution Score", ascending=True)
 worst = results_df.iloc[0]
-st.error(
-    f"🚨 **Critical Segment Driver Identified:** `{worst['Dimension']} = {worst['Segment']}` "
-    f"experienced a **{worst['CR Delta (%)']}%** conversion collapse, resulting in an estimated **${worst['Estimated Lost Revenue ($)']:,}** in lost bookings."
+
+# Only raise the alert when the drop is material
+if worst["CR Delta (%)"] <= -ALERT_THRESHOLD_PTS:
+    st.error(
+        f"🚨 **Top Driver:** `{worst['Segment']}` ({worst['Dimension']}) saw conversion fall "
+        f"**{abs(worst['CR Delta (%)']):.2f} points** "
+        f"({worst['Baseline CR (%)']}% → {worst['Incident CR (%)']}%), "
+        f"an estimated **${worst['Estimated Lost Revenue ($)']:,}** in lost revenue."
+    )
+else:
+    st.success("✅ No segment shows a material conversion drop in the current selection.")
+
+st.caption(
+    "Slices overlap (a Chrome + Mobile session also counts under Chrome and under Mobile), "
+    "so loss scores across rows are not additive. Compare 1-way vs 2-/3-way slices to see "
+    "where the drop concentrates."
 )
 
-# Custom Color Palette per dimension
-custom_colors = {
-    "Browser": "#38bdf8",   # Sky blue
-    "Device": "#a855f7",    # Purple
-    "Gateway": "#f43f5e"    # Rose/Crimson
-}
+top_df = results_df.head(10)  # keep the chart readable with many combined slices
 
 fig_bar = px.bar(
-    results_df,
+    top_df,
     x="Loss Contribution Score",
     y="Segment",
-    color="Dimension",
-    color_discrete_map=custom_colors,
+    color="Depth",
     orientation="h",
     text="CR Delta (%)",
-    title="Contribution Loss by Segment (Red/Purple highlights root failures)",
-    template="plotly_dark"
+    title="Top 10 Segments by Traffic-Weighted Conversion Loss",
+    template="plotly_dark",
 )
 fig_bar.update_layout(
-    yaxis={'categoryorder': 'total ascending'},
-    plot_bgcolor='rgba(15, 23, 42, 0)',
-    paper_bgcolor='rgba(15, 23, 42, 0)',
-    font=dict(color="#e2e8f0")
+    yaxis={"categoryorder": "total descending"},
+    plot_bgcolor="rgba(15, 23, 42, 0)",
+    paper_bgcolor="rgba(15, 23, 42, 0)",
+    font=dict(color="#e2e8f0"),
 )
 st.plotly_chart(fig_bar, use_container_width=True)
+
+# --- In section 5, change the AOV input default from 75 to the data-driven value: ---
+# avg_order_value = st.number_input(
+#     "Average Order Value (AOV in $)", min_value=10, max_value=500,
+#     value=int(min(max(round(baseline_aov), 10), 500)) if baseline_aov else 75, step=5
+# )
+#
+# Also guard the Orders metric in section 3 against b_orders == 0:
+# order_delta = ((i_orders - b_orders) / b_orders * 100) if b_orders > 0 else 0
+# col4.metric("Orders Processed", f"{i_orders:,.0f}", f"{order_delta:.1f}% vs Baseline")
 
 # --- 5. INTERACTIVE WHAT-IF REVENUE SIMULATOR ---
 st.subheader("3. 💡 What-If Scenario Recovery Simulator")
