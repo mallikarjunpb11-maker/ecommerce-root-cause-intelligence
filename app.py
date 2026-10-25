@@ -12,14 +12,76 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom Styling for polished Analyst Look
+# --- CUSTOM ANALYST THEME: GRADIENTS, CARDS & ACCENTS ---
 st.markdown("""
     <style>
-    .metric-card {
-        background-color: #0e1117;
-        border: 1px solid #262730;
-        border-radius: 8px;
-        padding: 15px;
+    /* 1. Main Dashboard Background Gradient */
+    .stApp {
+        background: radial-gradient(circle at 10% 20%, rgb(15, 23, 42) 0%, rgb(10, 15, 29) 90.2%);
+        color: #f8fafc;
+    }
+
+    /* 2. Sidebar Custom Styling */
+    section[data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #0b0f19 0%, #111827 100%) !important;
+        border-right: 1px solid #1e293b;
+    }
+
+    /* 3. Executive Metric KPI Cards */
+    div[data-testid="stMetric"] {
+        background: rgba(30, 41, 59, 0.7);
+        border: 1px solid #334155;
+        border-radius: 12px;
+        padding: 16px 20px;
+        box-shadow: 0 4px 14px 0 rgba(0, 0, 0, 0.35);
+        backdrop-filter: blur(8px);
+        transition: transform 0.2s ease, border-color 0.2s ease;
+    }
+    div[data-testid="stMetric"]:hover {
+        transform: translateY(-2px);
+        border-color: #38bdf8;
+    }
+
+    /* Metric Label (Title) */
+    div[data-testid="stMetric"] label {
+        color: #94a3b8 !important;
+        font-weight: 600;
+        letter-spacing: 0.5px;
+    }
+
+    /* Metric Value */
+    div[data-testid="stMetric"] div[data-testid="stMetricValue"] {
+        color: #f1f5f9 !important;
+        font-weight: 700;
+    }
+
+    /* 4. Sleek Headers with Gradient Underline */
+    h1 {
+        background: linear-gradient(90deg, #38bdf8 0%, #818cf8 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        font-weight: 800 !important;
+    }
+
+    h2, h3 {
+        color: #e2e8f0 !important;
+        border-bottom: 2px solid #1e293b;
+        padding-bottom: 6px;
+    }
+
+    /* 5. Custom Button Styling */
+    .stDownloadButton button {
+        background: linear-gradient(90deg, #0284c7 0%, #2563eb 100%) !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 8px !important;
+        padding: 10px 24px !important;
+        font-weight: 600 !important;
+        box-shadow: 0 4px 12px rgba(2, 132, 199, 0.35) !important;
+    }
+    .stDownloadButton button:hover {
+        opacity: 0.95;
+        transform: scale(1.02);
     }
     </style>
 """, unsafe_allow_html=True)
@@ -137,18 +199,30 @@ st.error(
     f"experienced a **{worst['CR Delta (%)']}%** conversion collapse, resulting in an estimated **${worst['Estimated Lost Revenue ($)']:,}** in lost bookings."
 )
 
-# Plotly Bidirectional Impact Chart
+# Custom Color Palette per dimension
+custom_colors = {
+    "Browser": "#38bdf8",   # Sky blue
+    "Device": "#a855f7",    # Purple
+    "Gateway": "#f43f5e"    # Rose/Crimson
+}
+
 fig_bar = px.bar(
     results_df,
     x="Loss Contribution Score",
     y="Segment",
     color="Dimension",
+    color_discrete_map=custom_colors,
     orientation="h",
     text="CR Delta (%)",
-    title="Segment Contribution to Overall Conversion Drop (Most Negative = Primary Anomaly)",
+    title="Contribution Loss by Segment (Red/Purple highlights root failures)",
     template="plotly_dark"
 )
-fig_bar.update_layout(yaxis={'categoryorder': 'total ascending'})
+fig_bar.update_layout(
+    yaxis={'categoryorder': 'total ascending'},
+    plot_bgcolor='rgba(15, 23, 42, 0)',
+    paper_bgcolor='rgba(15, 23, 42, 0)',
+    font=dict(color="#e2e8f0")
+)
 st.plotly_chart(fig_bar, use_container_width=True)
 
 # --- 5. INTERACTIVE WHAT-IF REVENUE SIMULATOR ---
